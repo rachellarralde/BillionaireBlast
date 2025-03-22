@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Billionaire Blast</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      main {
+        display: block;
+      }
+      @font-face {
+        font-family: "Arial";
+        src: local("Arial");
+      }
+    </style>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <main>
+      <!-- Game will be rendered here by p5.js -->
+    </main>
+
+    <script>
+      // Game variables
+      let canvas;
+      let player = {
+        x: 0,
+        y: -50,
+        z: 0,
+        rotX: 0,
+        rotY: 0,
+        speed: 5,
+        height: 50,
+      };
+      let buildings = [];
+      let enemies = [];
+      let bullets = [];
+      let score = 0;
+      let health = 100;
+      let gameState = "loading"; // loading, intro, playing, paused, gameOver
+      let pointerLocked = false;
+      let gameFont;
+      let fontLoaded = false;
+
+      // Loading screen variables
+      let loadingProgress = 0;
+      let totalAssets = 0;
+      let loadedAssets = 0;
+      let loadingComplete = false;
+
+      // Enemy assets
+      let enemyImages = {};
+      let enemyTypes = ["elon", "jef", "trump", "zuk"];
+
+      // Preload function to load assets
+      function preload() {
+        // Count total assets to load for progress tracking
+        totalAssets = enemyTypes.length + 1; // enemy images + font
+        
+        // Load system font
+        try {
+          gameFont = loadFont(
+            "https://cdnjs.cloudflare.com/ajax/libs/ink/3.1.10/fonts/Roboto/roboto-regular-webfont.ttf",
+            // Success callback
+            () => {
+              fontLoaded = true;
+              loadedAssets++;
+              updateLoadingProgress();
+            },
+            // Error callback
+            (err) => {
+              console.error("Error loading font:", err);
+              loadedAssets++; // Still count as loaded to avoid hanging
+              updateLoadingProgress();
+            }
+          );
+        } catch (e) {
+          console.error("Error loading font:", e);
+          loadedAssets++; // Still count as loaded to avoid hanging
+          updateLoadingProgress();
+        }
+
+        // Load enemy images
+        try {
+          for (let type of enemyTypes) {
+            loadImage("assets/" + type + ".png", 
+              // Success callback
+              (img) => {
+                enemyImages[type] = img;
+                loadedAssets++;
+                updateLoadingProgress();
+              },
+              // Error callback
+              (err) => {
+                console.error(`Error loading ${type} image:`, err);
+                // Create a placeholder for failed loads
+                let placeholder = createGraphics(100, 100);
+                placeholder.background(255, 0, 0);
+                placeholder.fill(255);
+                placeholder.textSize(16);
+                placeholder.textAlign(CENTER, CENTER);
+                placeholder.text(type, 50, 50);
+                enemyImages[type] = placeholder;
+                loadedAssets++; // Still count as loaded to avoid hanging
+                updateLoadingProgress();
+              }
+            );
+          }
+        } catch (e) {
+          console.error("Error loading enemy images:", e);
+        }
+      }
+
+      // Update loading progress
+      function updateLoadingProgress() {
+        loadingProgress = loadedAssets / totalAssets;
+        
+        // Check if all assets are loaded
+        if (loadedAssets >= totalAssets && !loadingComplete) {
+          loadingComplete = true;
+          // Wait a moment to show 100% before switching to intro
+          setTimeout(() => {
+            gameState = "intro";
+          }, 500);
+        }
+      }
+
+      // Setup function
+      function setup() {
+        // Create canvas
+        canvas = createCanvas(windowWidth, windowHeight, WEBGL);
+
+        // Set text font - with fallback
+        if (gameFont) {
+          textFont(gameFont);
+          fontLoaded = true;
+        } else {
+          // Use fallback approach
+          textFont("monospace");
+          fontLoaded = true;
+        }
+
+        // Set text size
+        textSize(16);
+
+        // Generate simple environment
+        generateEnvironment();
+
+        // Spawn initial enemies
+        spawnEnemies(5);
+
+        // Set up pointer lock event listeners
+        document.addEventListener(
+          "pointerlockchange",
+          pointerLockChange,
+          false
+        );
+        document.addEventListener(
+          "mozpointerlockchange",
+          pointerLockChange,
+          false
+        );
+        document.addEventListener(
+          "webkitpointerlockchange",
+          pointerLockChange,
+          false
+        );
+
+        // Add click event to canvas for pointer lock
+        canvas.mouseClicked(function () {
+          if (gameState === "intro") {
+            gameState = "playing";
+            lockPointer();
+          } else if (gameState === "playing" && !pointerLocked) {
+            lockPointer();
+          } else if (gameState === "gameOver") {
+            resetGame();
+            gameState = "playing";
+            lockPointer();
+          }
+        });
+      }
+
+      // Generate environment
+      function generateEnvironment() {
+        // Create buildings for urban environment
+        for (let i = 0; i < 10; i++) {
+          let x = random(-1000, 1000);
+          let z = random(-1000, 1000);
+
+          // Don't place buildings too close to player spawn
+          if (dist(x, z, 0, 0) > 300) {
+            let w = random(100, 300);
+            let h = random(100, 500);
+            let d = random(100, 300);
+            buildings.push({ x, z, w, h, d, color: color(random(50, 150)) });
+          }
+        }
+
+        // Add ground
+        buildings.push({
+          x: 0,
+          z: 0,
+          w: 2000,
+          h: 1,
+          d: 2000,
+          color: color(80, 80, 80),
+          isGround: true,
+        });
+      }
+
+      // Spawn enemies
+      function spawnEnemies(count) {
+        for (let i = 0; i < count; i++) {
+          let x = random(-1000, 1000);
+          let z = random(-1000, 1000);
+
+          // Don't spawn enemies too close to player
+          if (dist(x, z, player.x, player.z) > 300) {
+            // Randomly select enemy type
+            let typeName = random(enemyTypes);
+
+            let enemy = {
+              x: x,
+              y: -40, // Position enemies slightly above the floor for a natural standing position
+              z: z,
+              size: 80,
+              height: 150, // Height of the enemy
+              health: 100,
+              speed: random(0.5, 2),
+              color: color(255, 0, 0),
+              typeName: typeName,
+            };
+            enemies.push(enemy);
+          }
+        }
+      }
+
+      // Draw function - main game loop
+      function draw() {
+        // Clear background
+        background(0);
+
+        // Basic error handling
+        try {
+          // Update based on game state
+          switch (gameState) {
+            case "loading":
+              drawLoadingScreen();
+              break;
+            case "intro":
+              // Simple intro screen
+              push();
+              noLights();
+              fill(0, 0, 0, 200);
+              translate(0, 0, -500);
+              plane(width, height);
+
+              if (fontLoaded) {
+                fill(255, 0, 0);
+                textSize(32);
+                textAlign(CENTER, CENTER);
+                text("BILLIONAIRE BLAST", 0, -50);
+
+                fill(255);
+                textSize(16);
+                text("Click to start", 0, 50);
+              } else {
+                // Fallback if font not loaded
+                fill(255, 0, 0);
+                rect(-100, -60, 200, 20);
+
+                fill(255);
+                rect(-50, 40, 100, 20);
+              }
+              pop();
+              break;
+
+            case "playing":
+              // Update player position based on key presses
+              updatePlayer();
+
+              // Draw environment
+              drawEnvironment();
+
+              // Update and draw enemies
+              updateEnemies();
+
+              // Update and draw bullets
+              updateBullets();
+
+              // Check collisions
+              checkCollisions();
+
+              // Draw UI
+              drawUI();
+
+              // Check if player is dead
+              if (health <= 0) {
+                gameState = "gameOver";
+                document.exitPointerLock();
+              }
+              break;
+
+            case "paused":
+              // Draw environment (static)
+              drawEnvironment();
+
+              // Draw enemies (static)
+              for (let enemy of enemies) {
+                displayEnemy(enemy);
+              }
+
+              // Draw bullets (static)
+              for (let bullet of bullets) {
+                displayBullet(bullet);
+              }
+
+              // Draw pause screen
+              push();
+              camera();
+              perspective();
+              noLights();
+
+              // Semi-transparent overlay
+              fill(0, 0, 0, 150);
+              translate(0, 0, -100);
+              plane(width * 2, height * 2);
+
+              if (fontLoaded) {
+                fill(255);
+                textSize(72);
+                textAlign(CENTER, CENTER);
+                text("PAUSED", 0, -50);
+
+                textSize(32);
+                text("Press ESC to resume", 0, 50);
+              } else {
+                // Fallback if font not loaded
+                fill(255);
+                rect(-100, -20, 200, 40);
+                rect(-150, 40, 300, 40);
+              }
+
+              pop();
+              break;
+
+            case "gameOver":
+              // Draw game over screen
+              push();
+              noLights();
+              fill(0, 0, 0, 200);
+              translate(0, 0, -500);
+              plane(width, height);
+
+              if (fontLoaded) {
+                fill(255, 0, 0);
+                textSize(32);
+                textAlign(CENTER, CENTER);
+                text("GAME OVER", 0, -50);
+
+                fill(255);
+                textSize(16);
+                text("Score: " + score, 0, 0);
+                text("Click to restart", 0, 50);
+              } else {
+                // Fallback if font not loaded
+                fill(255, 0, 0);
+                rect(-75, -60, 150, 20);
+
+                fill(255);
+                rect(-50, -10, 100, 20);
+                rect(-75, 40, 150, 20);
+              }
+              pop();
+              break;
+          }
+        } catch (e) {
+          // If there's an error, show a simple error message
+          console.error("Game error:", e);
+          background(0);
+          push();
+          noLights();
+
+          if (fontLoaded) {
+            fill(255, 0, 0);
+            textSize(16);
+            textAlign(CENTER, CENTER);
+            text("Error: " + e.message, 0, 0);
+          } else {
+            // Fallback if font not loaded
+            fill(255, 0, 0);
+            rect(-100, -10, 200, 20);
+          }
+          pop();
+        }
+      }
+
+      // Update player position and camera
+      function updatePlayer() {
+        // Move forward/backward
+        if (keyIsDown(87)) {
+          // W key
+          player.x += sin(player.rotY) * player.speed;
+          player.z += cos(player.rotY) * player.speed;
+        }
+        if (keyIsDown(83)) {
+          // S key
+          player.x -= sin(player.rotY) * player.speed;
+          player.z -= cos(player.rotY) * player.speed;
+        }
+
+        // Strafe left/right
+        if (keyIsDown(65)) {
+          // A key - move left (perpendicular to viewing direction)
+          let moveAngle = player.rotY + PI / 2; // 90 degrees to the right
+          player.x += sin(moveAngle) * player.speed;
+          player.z += cos(moveAngle) * player.speed;
+        }
+        if (keyIsDown(68)) {
+          // D key - move right (perpendicular to viewing direction)
+          let moveAngle = player.rotY - PI / 2; // 90 degrees to the left
+          player.x += sin(moveAngle) * player.speed;
+          player.z += cos(moveAngle) * player.speed;
+        }
+
+        // Set camera position and rotation
+        camera(
+          player.x,
+          player.y,
+          player.z,
+          player.x + sin(player.rotY),
+          player.y + sin(player.rotX),
+          player.z + cos(player.rotY),
+          0,
+          1,
+          0
+        );
+      }
+
+      // Update and draw enemies
+      function updateEnemies() {
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          let enemy = enemies[i];
+
+          // Move enemy towards player
+          let dx = player.x - enemy.x;
+          let dz = player.z - enemy.z;
+          let dist = sqrt(dx * dx + dz * dz);
+
+          if (dist > 50) {
+            // Don't get too close
+            enemy.x += (dx / dist) * enemy.speed;
+            enemy.z += (dz / dist) * enemy.speed;
+          }
+
+          // Display enemy
+          displayEnemy(enemy);
+
+          // Remove dead enemies
+          if (enemy.health <= 0) {
+            enemies.splice(i, 1);
+            score += 100;
+
+            // Spawn a new enemy
+            if (random() > 0.5) {
+              spawnEnemies(1);
+            }
+          }
+        }
+      }
+
+      // Display enemy
+      function displayEnemy(enemy) {
+        push();
+        // Position at the enemy's location, but adjust Y to be on the ground
+        translate(enemy.x, enemy.y, enemy.z);
+
+        // Make enemy face the player
+        let dx = player.x - enemy.x;
+        let dz = player.z - enemy.z;
+        let angle = atan2(dx, dz);
+        rotateY(angle);
+
+        // Check if we have the enemy image
+        if (enemy.typeName && enemyImages[enemy.typeName]) {
+          // Use billboard technique to always face camera
+          push();
+          // Scale to appropriate size
+          let scaleFactor = enemy.size / 200; // Adjust based on image size
+
+          // Move the bottom of the billboard to ground level
+          translate(0, (-enemy.height * scaleFactor) / 2, 0);
+
+          scale(scaleFactor);
+
+          // Draw the image as a billboard
+          noStroke();
+          texture(enemyImages[enemy.typeName]);
+          plane(200, 300); // Adjust based on image proportions
+          pop();
+        } else {
+          // Fallback to colored box if image not available
+          // Move the bottom of the box to ground level
+          translate(0, -enemy.size, 0);
+          fill(enemy.color);
+          box(enemy.size, enemy.size * 2, enemy.size / 2);
+        }
+
+        pop();
+      }
+
+      // Update and draw bullets
+      function updateBullets() {
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          let bullet = bullets[i];
+
+          // Move bullet
+          bullet.x += bullet.vx;
+          bullet.y += bullet.vy;
+          bullet.z += bullet.vz;
+
+          // Display bullet
+          displayBullet(bullet);
+
+          // Remove bullets that have traveled too far
+          bullet.distance += bullet.speed;
+          if (bullet.distance > 1000) {
+            bullets.splice(i, 1);
+          }
+        }
+      }
+
+      // Display bullet
+      function displayBullet(bullet) {
+        push();
+        translate(bullet.x, bullet.y, bullet.z);
+        fill(255, 0, 0);
+        noStroke();
+        sphere(4);
+        pop();
+      }
+
+      // Check collisions between bullets and enemies
+      function checkCollisions() {
+        // Check bullet-enemy collisions
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          let bullet = bullets[i];
+
+          for (let j = enemies.length - 1; j >= 0; j--) {
+            let enemy = enemies[j];
+
+            // Simple collision detection
+            let d = dist(bullet.x, bullet.z, enemy.x, enemy.z);
+            if (d < enemy.size / 2) {
+              // Hit!
+              enemy.health -= bullet.damage;
+              bullets.splice(i, 1);
+              break;
+            }
+          }
+        }
+
+        // Check player-enemy collisions
+        for (let enemy of enemies) {
+          let d = dist(player.x, player.z, enemy.x, enemy.z);
+          if (d < enemy.size) {
+            // Player is hit
+            health -= 0.5; // Continuous damage when touching
+          }
+        }
+      }
+
+      // Draw environment
+      function drawEnvironment() {
+        // Set ambient light
+        ambientLight(60, 60, 60);
+
+        // Add directional light
+        directionalLight(255, 255, 255, 0.5, 1, -0.5);
+
+        // Draw buildings
+        for (let building of buildings) {
+          push();
+          if (building.isGround) {
+            // Draw ground plane
+            translate(building.x, 0, building.z);
+            rotateX(HALF_PI);
+            fill(building.color);
+            plane(building.w, building.d);
+          } else {
+            // Draw building
+            translate(building.x, -building.h / 2, building.z);
+            fill(building.color);
+            box(building.w, building.h, building.d);
+          }
+          pop();
+        }
+      }
+
+      // Draw UI elements
+      function drawUI() {
+        push();
+        // Reset lighting for UI elements
+        noLights();
+
+        // Draw crosshair
+        stroke(255);
+        strokeWeight(1);
+        noFill();
+        // Horizontal line
+        line(-10 / 2, 0, 10 / 2, 0);
+        // Vertical line
+        line(0, -10 / 2, 0, 10 / 2);
+
+        // Switch to 2D mode for UI text
+        camera();
+        ortho();
+
+        // Draw health bar
+        fill(0, 0, 0, 150);
+        rect(20, height - 30, 100, 10);
+
+        // Health bar fill
+        fill(255, 0, 0);
+        rect(20, height - 30, 100 * (health / 100), 10);
+
+        if (fontLoaded) {
+          // Draw score
+          fill(255);
+          textSize(16);
+          textAlign(LEFT);
+          text("Score: " + score, 20, height - 50);
+
+          // Draw enemy count
+          text("Enemies: " + enemies.length, 20, height - 70);
+        } else {
+          // Fallback UI without text
+          fill(255);
+          rect(20, height - 50, 50, 10); // Score indicator
+          rect(20, height - 70, enemies.length * 5, 10); // Enemy count indicator
+        }
+        pop();
+      }
+
+      // Shoot function
+      function shoot() {
+        // Calculate bullet direction from player's view
+        let dirX = sin(player.rotY) * cos(player.rotX);
+        let dirY = sin(player.rotX);
+        let dirZ = cos(player.rotY) * cos(player.rotX);
+
+        // Create bullet
+        let bullet = {
+          x: player.x,
+          y: player.y,
+          z: player.z,
+          vx: dirX * 10,
+          vy: dirY * 10,
+          vz: dirZ * 10,
+          speed: 10,
+          distance: 0,
+          damage: 25,
+        };
+
+        bullets.push(bullet);
+      }
+
+      // Reset game function
+      function resetGame() {
+        // Reset game variables
+        player = { x: 0, y: -50, z: 0, rotX: 0, rotY: 0, speed: 5, height: 50 };
+        enemies = [];
+        bullets = [];
+        score = 0;
+        health = 100;
+
+        // Spawn new enemies
+        spawnEnemies(5);
+      }
+
+      // Mouse pressed event
+      function mousePressed() {
+        if (gameState === "playing" && pointerLocked) {
+          shoot();
+        }
+      }
+
+      // Mouse moved event for camera rotation
+      function mouseMoved() {
+        if (pointerLocked && gameState === "playing") {
+          // Adjust rotation based on mouse movement
+          player.rotY -= movedX * 0.002;
+          // Invert Y-axis for more intuitive camera control
+          player.rotX += movedY * 0.002;
+
+          // Limit vertical rotation
+          player.rotX = constrain(player.rotX, -PI / 3, PI / 3);
+        }
+      }
+
+      // Key pressed event
+      function keyPressed() {
+        if (keyCode === ESCAPE) {
+          if (gameState === "playing") {
+            gameState = "paused";
+            document.exitPointerLock();
+          } else if (gameState === "paused") {
+            gameState = "playing";
+            lockPointer();
+          }
+        }
+      }
+
+      // Window resize event
+      function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+      }
+
+      // Pointer lock functions
+      function pointerLockChange() {
+        if (
+          document.pointerLockElement === canvas.elt ||
+          document.mozPointerLockElement === canvas.elt ||
+          document.webkitPointerLockElement === canvas.elt
+        ) {
+          // Pointer is locked
+          pointerLocked = true;
+        } else {
+          // Pointer is unlocked
+          pointerLocked = false;
+
+          // If we're playing, pause the game
+          if (gameState === "playing") {
+            gameState = "paused";
+          }
+        }
+      }
+
+      function lockPointer() {
+        canvas.elt.requestPointerLock =
+          canvas.elt.requestPointerLock ||
+          canvas.elt.mozRequestPointerLock ||
+          canvas.elt.webkitRequestPointerLock;
+        canvas.elt.requestPointerLock();
+      }
+
+      // Draw loading screen
+      function drawLoadingScreen() {
+        push();
+        noLights();
+        camera();
+        ortho();
+        
+        // Title
+        fill(255);
+        textSize(32);
+        textAlign(CENTER, CENTER);
+        text("BILLIONAIRE BLAST", width / 2, height / 3);
+        
+        // Loading bar background
+        fill(50);
+        noStroke();
+        rectMode(CENTER);
+        rect(width / 2, height / 2, width / 2, 20);
+        
+        // Loading bar progress
+        fill(255, 0, 0);
+        rect(width / 2 - (width / 4) * (1 - loadingProgress), height / 2, (width / 2) * loadingProgress, 20, 0, 10, 10, 0);
+        
+        // Loading text
+        fill(255);
+        textSize(16);
+        text(`Loading: ${Math.floor(loadingProgress * 100)}%`, width / 2, height / 2 + 40);
+        
+        // Instructions (only show when almost loaded)
+        if (loadingProgress > 0.8) {
+          textSize(14);
+          text("Click to start when loading completes", width / 2, height / 2 + 80);
+        }
+        pop();
+      }
+    </script>
+  </body>
+</html>
